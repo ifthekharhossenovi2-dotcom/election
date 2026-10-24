@@ -15,7 +15,7 @@ import {
   Lock
 } from 'lucide-react';
 import { CAMPAIGN_INFO } from '../data/campaignData';
-import { GOOGLE_APPS_SCRIPT_URL } from '../config';
+import { FORMSPREE_ENDPOINT } from '../config';
 import confetti from 'canvas-confetti';
 
 export const ContactSection: React.FC = () => {
@@ -66,12 +66,14 @@ export const ContactSection: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
+
     setErrorMessage(null);
     setValidationError(null);
 
     // 1. Anti-spam Check: Honeypot field must be empty
     if (formData.honeypot && formData.honeypot.trim().length > 0) {
-      // Bot detected, silently reject
+      // Bot detected, silently reject without submitting
       return;
     }
 
@@ -96,52 +98,53 @@ export const ContactSection: React.FC = () => {
       return;
     }
 
-    // 4. Endpoint verification
-    const endpointUrl = GOOGLE_APPS_SCRIPT_URL.trim();
-    if (!endpointUrl) {
-      setErrorMessage(
-        'Google Sheet Web App endpoint is not configured yet. Please insert your deployed Google Apps Script URL in src/config.ts (or VITE_APPS_SCRIPT_URL in .env).'
-      );
-      return;
-    }
-
     setIsSubmitting(true);
 
     try {
       const payload = {
-        timestamp: new Date().toLocaleString('en-US', { timeZone: 'Asia/Dhaka' }),
         name: trimmedName,
         batch: formData.batch.trim() || 'N/A',
-        message: trimmedMessage
+        message: trimmedMessage,
+        _gotcha: formData.honeypot
       };
 
-      // Google Apps Script Web App standard submission:
-      // Sending text/plain avoids CORS preflight OPTIONS which Apps Script does not support
-      const response = await fetch(endpointUrl, {
+      const response = await fetch(FORMSPREE_ENDPOINT, {
         method: 'POST',
         headers: {
-          'Content-Type': 'text/plain;charset=utf-8'
+          'Content-Type': 'application/json',
+          Accept: 'application/json'
         },
-        body: JSON.stringify(payload),
-        // mode: 'cors' or 'no-cors' - with Google Apps Script Web App, standard redirection happens
-        mode: 'no-cors'
+        body: JSON.stringify(payload)
       });
 
-      // Because mode: 'no-cors' gives opaque response type:
-      // If fetch did not throw a network error, the POST request successfully reached Google servers
-      setSubmitSuccess(true);
-      setFormData({ name: '', batch: '', message: '', honeypot: '' });
+      if (response.ok) {
+        setSubmitSuccess(true);
+        setFormData({ name: '', batch: '', message: '', honeypot: '' });
 
-      confetti({
-        particleCount: 90,
-        spread: 70,
-        origin: { y: 0.7 },
-        colors: ['#25a244', '#05f244', '#ffffff', '#facc15']
-      });
-    } catch (err: any) {
-      console.error('Submission error:', err);
+        confetti({
+          particleCount: 90,
+          spread: 70,
+          origin: { y: 0.7 },
+          colors: ['#25a244', '#05f244', '#ffffff', '#facc15']
+        });
+      } else {
+        let userMessage = 'Unable to submit your message at this time. Please try again.';
+        try {
+          const result = await response.json();
+          if (result && Array.isArray(result.errors) && result.errors.length > 0) {
+            userMessage = result.errors.map((errItem: any) => errItem.message || 'Validation error').join('. ');
+          } else if (result && typeof result.error === 'string') {
+            userMessage = result.error;
+          }
+        } catch {
+          // Response body was not JSON, keep default friendly message
+        }
+        setErrorMessage(userMessage);
+      }
+    } catch (err) {
+      console.error('Form submission network error:', err);
       setErrorMessage(
-        'Unable to send message to Google Sheet. Please check your internet connection or verify the Apps Script URL.'
+        'A network connection error occurred. Please check your internet connection and try again.'
       );
     } finally {
       setIsSubmitting(false);
@@ -272,7 +275,7 @@ export const ContactSection: React.FC = () => {
               <h3>মতামত বা সমর্থন পাঠান (Message / Endorsement)</h3>
             </div>
             <p className="text-xs text-gray-300 mb-5">
-              Submit your thoughts, suggestions for club budgeting, or campaign endorsement. Every entry is logged directly into the campaign Google Sheet.
+              Submit your thoughts, suggestions for club budgeting, or campaign endorsement. Your message is delivered directly to the candidate's campaign.
             </p>
 
             {/* Success state */}
@@ -285,7 +288,7 @@ export const ContactSection: React.FC = () => {
                 <CheckCircle2 size={44} className="text-[#05f244] mx-auto animate-bounce" />
                 <h4 className="text-lg font-bold text-white">ধন্যবাদ! আপনার বার্তা সফলভাবে সংরক্ষিত হয়েছে।</h4>
                 <p className="text-sm text-gray-200">
-                  Your message has been verified and saved directly to the candidate's Google Sheet ledger.
+                  Your message has been verified and received directly by the candidate's campaign.
                 </p>
                 <button
                   onClick={() => {
@@ -300,13 +303,13 @@ export const ContactSection: React.FC = () => {
               </motion.div>
             ) : (
               <form onSubmit={handleSubmit} className="space-y-4">
-                {/* Honeypot hidden input for spam protection */}
+                {/* Honeypot hidden input for spam protection (Formspree _gotcha) */}
                 <div className="hidden" aria-hidden="true">
-                  <label htmlFor="website-field">Leave this empty</label>
+                  <label htmlFor="gotcha-field">Leave this empty</label>
                   <input
-                    id="website-field"
+                    id="gotcha-field"
                     type="text"
-                    name="website"
+                    name="_gotcha"
                     tabIndex={-1}
                     autoComplete="off"
                     value={formData.honeypot}
@@ -331,10 +334,12 @@ export const ContactSection: React.FC = () => {
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-semibold text-gray-300 mb-1">
+                    <label htmlFor="form-name" className="block text-xs font-semibold text-gray-300 mb-1">
                       Your Name <span className="text-red-400">*</span>
                     </label>
                     <input
+                      id="form-name"
+                      name="name"
                       type="text"
                       required
                       placeholder="e.g. Tanvir Ahmed"
@@ -346,10 +351,12 @@ export const ContactSection: React.FC = () => {
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-gray-300 mb-1">
+                    <label htmlFor="form-batch" className="block text-xs font-semibold text-gray-300 mb-1">
                       PCIU Batch / ID <span className="text-gray-400 font-normal">(Optional)</span>
                     </label>
                     <input
+                      id="form-batch"
+                      name="batch"
                       type="text"
                       placeholder="e.g. CSE 28th Batch"
                       value={formData.batch}
@@ -361,10 +368,12 @@ export const ContactSection: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-gray-300 mb-1">
+                  <label htmlFor="form-message" className="block text-xs font-semibold text-gray-300 mb-1">
                     Your Message or Suggestion <span className="text-red-400">*</span>
                   </label>
                   <textarea
+                    id="form-message"
+                    name="message"
                     rows={4}
                     required
                     placeholder="Write your feedback, questions on financial transparency, or words of encouragement for Ovi..."
@@ -392,7 +401,7 @@ export const ContactSection: React.FC = () => {
                   {isSubmitting ? (
                     <>
                       <Loader2 size={18} className="animate-spin text-white" />
-                      <span>Saving to Google Sheet...</span>
+                      <span>Sending message...</span>
                     </>
                   ) : (
                     <>
